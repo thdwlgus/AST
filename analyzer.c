@@ -1,14 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 
-#define MAX_JSON_SIZE 50000
+#define MAX_SIZE 100000
 
-// 문자열 안에서 키워드가 몇 번 등장하는지 세기
-int count_keyword(const char *text, const char *keyword) {
+// 키워드 개수 세기 함수
+int count_keyword(const char *src, const char *keyword) {
     int count = 0;
-    const char *p = text;
+    const char *p = src;
     while ((p = strstr(p, keyword)) != NULL) {
         count++;
         p += strlen(keyword);
@@ -16,28 +15,38 @@ int count_keyword(const char *text, const char *keyword) {
     return count;
 }
 
-// 특정 키워드 다음에 나오는 문자열 값 추출 
-bool extract_next_string(const char *start, const char *key, char *output) {
-    const char *p = strstr(start, key);
-    if (!p) return false;
-    p = strchr(p, '\"'); 
-    if (!p) return false;
-    p = strchr(p + 1, '\"'); 
-    if (!p) return false;
-    const char *begin = p + 1;
-    p = strchr(begin, '\"');
-    if (!p) return false;
-    int len = p - begin;
-    strncpy(output, begin, len);
-    output[len] = '\0';
-    return true;
+// "name": "something" 형태에서 이름 추출
+const char* extract_string_value(const char *src, const char *key, char *buffer) {
+    const char *p = strstr(src, key);
+    if (!p) return NULL;
+    p = strchr(p, '\"'); if (!p) return NULL;
+    p = strchr(p + 1, '\"'); if (!p) return NULL;
+    const char *start = p + 1;
+    const char *end = strchr(start, '\"');
+    if (!end) return NULL;
+    int len = end - start;
+    strncpy(buffer, start, len);
+    buffer[len] = '\0';
+    return end;
 }
 
-// 함수 정보를 추출하는 함수
+// "names": ["int"] 형태에서 타입 추출
+const char* extract_type(const char *src, char *buffer) {
+    const char *p = strstr(src, "\"names\"");
+    if (!p) return NULL;
+    const char *open = strchr(p, '[');
+    const char *close = strchr(p, ']');
+    if (!open || !close || close <= open) return NULL;
+    int len = close - open - 1;
+    strncpy(buffer, open + 1, len);
+    buffer[len] = '\0';
+    return close;
+}
+
 void analyze_ast(const char *json) {
-    int func_count = 0;
-    int if_count = 0;
     const char *p = json;
+    int func_count = 0;
+    int total_if_count = 0;
 
     printf("🔍 함수 분석 시작\n");
 
@@ -45,81 +54,68 @@ void analyze_ast(const char *json) {
         func_count++;
         printf("\n🔹 [%d번째 함수]\n", func_count);
 
-        // 함수 이름 추출
-        char name[100] = "(unknown)";
-        extract_next_string(p, "\"name\"", name);
-        printf("  🧩 함수 이름: %s\n", name);
+        // 함수 이름
+        char func_name[100] = "(이름없음)";
+        extract_string_value(p, "\"name\"", func_name);
+        printf("  📛 이름: %s\n", func_name);
 
-        // 리턴 타입 추출
-        char *rtype = strstr(p, "\"names\"");
-        if (rtype) {
-            char *rbeg = strchr(rtype, '[');
-            char *rend = strchr(rtype, ']');
-            if (rbeg && rend && rend > rbeg) {
-                char rtype_str[50] = {0};
-                strncpy(rtype_str, rbeg + 1, rend - rbeg - 1);
-                printf("  🔙 리턴 타입: %s\n", rtype_str);
-            }
-        }
+        // 리턴 타입
+        char return_type[100] = "(타입없음)";
+        extract_type(p, return_type);
+        printf("  🔙 리턴타입: %s\n", return_type);
 
         // 파라미터 추출
         printf("  🛠️ 파라미터 목록:\n");
-        const char *arg_ptr = p;
-        while ((arg_ptr = strstr(arg_ptr, "\"_nodetype\": \"Decl\"")) != NULL) {
-            if (arg_ptr > strstr(p, "\"body\"")) break; 
+        const char *decl_ptr = p;
+        while ((decl_ptr = strstr(decl_ptr, "\"_nodetype\": \"Decl\"")) != NULL) {
+            // 함수 본문을 지나면 break
+            if (strstr(p, "\"body\"") && decl_ptr > strstr(p, "\"body\"")) break;
+
             char param_name[100] = "(unnamed)";
-            extract_next_string(arg_ptr, "\"name\"", param_name);
+            extract_string_value(decl_ptr, "\"name\"", param_name);
 
-            const char *ptype = strstr(arg_ptr, "\"names\"");
-            char ptype_str[100] = "";
-            if (ptype) {
-                char *pbeg = strchr(ptype, '[');
-                char *pend = strchr(ptype, ']');
-                if (pbeg && pend && pend > pbeg) {
-                    strncpy(ptype_str, pbeg + 1, pend - pbeg - 1);
-                    ptype_str[pend - pbeg - 1] = '\0';
-                }
-            }
+            char param_type[100] = "(type)";
+            extract_type(decl_ptr, param_type);
 
-            printf("    - %s: %s\n", param_name, ptype_str);
-            arg_ptr += strlen("\"_nodetype\": \"Decl\"");
+            printf("    - %s: %s\n", param_name, param_type);
+            decl_ptr += strlen("\"_nodetype\": \"Decl\"");
         }
 
-        // 함수 내부의 if 개수 추출
-        int local_if_count = count_keyword(p, "\"_nodetype\": \"If\"");
-        printf("  ❓ if 조건문 개수: %d개\n", local_if_count);
-        if_count += local_if_count;
+        // if 조건문 개수
+        int local_if = count_keyword(p, "\"_nodetype\": \"If\"");
+        printf("  ❓ if 조건문: %d개\n", local_if);
+        total_if_count += local_if;
 
-        // 다음 함수로 이동
         p += strlen("\"_nodetype\": \"FuncDef\"");
     }
 
     printf("\n✅ 총 함수 개수: %d개\n", func_count);
-    printf("✅ 전체 if 조건문 개수: %d개\n", if_count);
+    printf("✅ 전체 if 조건문 개수: %d개\n", total_if_count);
 }
 
 int main() {
     FILE *fp = fopen("ast.json", "r");
     if (!fp) {
-        perror("파일 열기 실패");
+        printf("❌ ast.json 파일을 열 수 없습니다.\n");
         return 1;
     }
 
-    char *json_data = malloc(MAX_JSON_SIZE);
-    if (!json_data) {
-        printf("메모리 할당 실패\n");
+    char *json = malloc(MAX_SIZE);
+    if (!json) {
+        printf("❌ 메모리 할당 실패\n");
         fclose(fp);
         return 1;
     }
 
-    json_data[0] = '\0';
-    char line[512];
+    json[0] = '\0';
+    char line[1024];
     while (fgets(line, sizeof(line), fp)) {
-        strcat(json_data, line);
+        strcat(json, line);
     }
     fclose(fp);
 
-    analyze_ast(json_data);
-    free(json_data);
+    analyze_ast(json);
+
+    free(json);
     return 0;
 }
